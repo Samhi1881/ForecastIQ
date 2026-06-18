@@ -2,6 +2,54 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
+from optimizer import compute_optimization_table, estimate_revenue_impact
+from llm_explainer import build_stats_payload, get_ai_explanation
+
+CAMPAIGN_TYPE_MAP = {
+    "PERFORMANCE_MAX": "Performance Max",
+    "PERFORMANCEMAX": "Performance Max",
+    "SEARCH": "Search",
+    "SHOPPING": "Shopping",
+    "DISPLAY": "Display",
+    "VIDEO": "Video",
+    "DEMAND_GEN": "Demand Gen",
+    "AUDIENCE": "Audience",
+    "META_CAMPAIGN": "Meta Campaign",
+}
+
+
+def normalize_campaign_type(value):
+    key = str(value).upper().replace(" ", "_")
+    return CAMPAIGN_TYPE_MAP.get(key, str(value).title())
+
+
+def compute_channel_roas(data):
+    grouped = data.groupby("channel").agg(
+        revenue=("revenue", "sum"),
+        spend=("spend", "sum"),
+    )
+    return (grouped["revenue"] / grouped["spend"].replace(0, pd.NA)).fillna(0)
+
+
+def compute_channel_roas_volatility(data):
+    """Std dev of weekly ROAS per channel -- a real volatility signal,
+    not a guess. Requires a `date` column."""
+    working = data.copy()
+    working["date"] = pd.to_datetime(working["date"])
+    working["week_start"] = working["date"].dt.to_period("W").dt.start_time
+
+    weekly = working.groupby(["channel", "week_start"]).agg(
+        spend=("spend", "sum"),
+        revenue=("revenue", "sum"),
+    ).reset_index()
+
+    weekly["roas"] = weekly.apply(
+        lambda row: row["revenue"] / row["spend"] if row["spend"] > 0 else 0,
+        axis=1,
+    )
+
+    return weekly.groupby("channel")["roas"].std().fillna(0)
+
 # ==================================================
 # PAGE CONFIG
 # ==================================================
@@ -107,6 +155,12 @@ Allocate more budget toward the highest-performing channel while monitoring camp
 """
 )
 
+st.caption(
+    "Model Confidence and the P10/P50/P90 range above reflect the trained "
+    "model's overall fit and are not recalculated per budget scenario. "
+    "Revenue and ROAS figures below the divider DO update with the sliders."
+)
+
 # ==================================================
 # KPI SECTION
 # ==================================================
@@ -160,28 +214,25 @@ top_revenue = (
     .max()
 )
 
-st.success(
-    f"Highest projected revenue comes from {top_channel}."
+channel_roas = compute_channel_roas(scenario_df)
+channel_volatility = compute_channel_roas_volatility(scenario_df)
+
+ai_stats = build_stats_payload(
+    scenario_df=scenario_df,
+    df=df,
+    top_channel=top_channel,
+    top_revenue=top_revenue,
+    channel_roas=channel_roas.to_dict(),
+    channel_volatility=channel_volatility.to_dict(),
+    uplift=uplift,
 )
 
-st.info(
-    f"Estimated revenue from {top_channel}: ${top_revenue:,.0f}"
-)
+ai_text, used_llm = get_ai_explanation(ai_stats)
 
-st.warning(
-    f"""
-Recommended Action:
+st.success(ai_text)
 
-Increase investment in {top_channel} campaigns.
-
-Expected Revenue Contribution:
-${top_revenue:,.0f}
-
-Monitor underperforming channels and
-reallocate spend to maximize forecasted
-revenue and ROAS.
-"""
-)
+if not used_llm:
+    st.caption("⚠ AI explanation unavailable — showing rule-based summary.")
 
 # ==================================================
 # MODEL CONFIDENCE
@@ -236,22 +287,17 @@ revenue, spend, or ROAS behavior.
 """
 )
 
+volatility_sorted = channel_volatility.sort_values(ascending=False)
+
+
+def severity_label(rank):
+    return ["High", "Medium", "Low"][min(rank, 2)]
+
+
 risk_df = pd.DataFrame({
-    "Campaign": [
-        "Search_TM_Campaign_03",
-        "Meta_Brand_Campaign_07",
-        "Pmax_Campaign_05"
-    ],
-    "Risk": [
-        "Revenue Drop 42%",
-        "ROAS Volatility",
-        "Spend Spike"
-    ],
-    "Severity": [
-        "High",
-        "Medium",
-        "Medium"
-    ]
+    "Channel": volatility_sorted.index,
+    "Weekly ROAS Volatility (std dev)": volatility_sorted.round(2).values,
+    "Severity": [severity_label(i) for i in range(len(volatility_sorted))],
 })
 
 st.dataframe(
@@ -267,35 +313,38 @@ st.divider()
 
 st.subheader("🎯 Budget Optimization Engine")
 
-optimization_df = pd.DataFrame({
-    "Channel": ["Google", "Meta", "Bing"],
-    "Current Allocation": ["60%", "30%", "10%"],
-    "Recommended Allocation": ["70%", "20%", "10%"]
-})
+optimization_df, optimization_numeric = compute_optimization_table(scenario_df)
 
 st.dataframe(
     optimization_df,
     use_container_width=True
 )
 
-st.success(
-    "Expected Revenue Increase: +$1.8M"
-)
+estimated_delta = estimate_revenue_impact(scenario_df, optimization_numeric)
 
 st.success(
-    "Expected ROAS Increase: +12%"
+    f"Estimated Revenue Impact of Reallocation: ${estimated_delta:,.0f}"
+)
+
+st.caption(
+    "Directional estimate only — assumes each channel's forecast ROAS "
+    "stays constant as spend shifts, which real channels rarely do "
+    "exactly (diminishing returns typically apply at higher spend)."
+)
+
+top_recommended_channel = max(
+    optimization_numeric["recommended_pct"],
+    key=optimization_numeric["recommended_pct"].get,
 )
 
 st.info(
-    """
+    f"""
 Optimization Recommendation
 
-Shift budget toward Google campaigns
-while reducing spend in lower-performing
-campaigns.
-
-This allocation maximizes forecasted
-revenue while maintaining strong ROAS.
+Recommended allocations are calculated from each channel's
+forecast ROAS (forecast revenue per dollar of spend), not
+hardcoded. {top_recommended_channel} currently has the strongest
+forecast ROAS and receives the largest recommended share.
 """
 )
 
@@ -328,6 +377,47 @@ fig = px.bar(
 st.plotly_chart(
     fig,
     width="stretch"
+)
+
+# ==================================================
+# CAMPAIGN TYPE PERFORMANCE
+# ==================================================
+
+st.divider()
+
+st.subheader("🎯 Campaign Type Performance")
+
+scenario_df["campaign_type_norm"] = scenario_df["campaign_type"].apply(
+    normalize_campaign_type
+)
+
+campaign_type_df = (
+    scenario_df
+    .groupby("campaign_type_norm")
+    .agg({
+        "revenue": "sum",
+        "forecast_revenue": "sum"
+    })
+    .reset_index()
+    .rename(columns={"campaign_type_norm": "campaign_type"})
+)
+
+fig3 = px.bar(
+    campaign_type_df,
+    x="campaign_type",
+    y=["revenue", "forecast_revenue"],
+    barmode="group",
+    title="Forecast Revenue by Campaign Type"
+)
+
+st.plotly_chart(
+    fig3,
+    width="stretch"
+)
+
+st.caption(
+    "Campaign type labels are normalized (e.g. 'PERFORMANCE_MAX' and "
+    "'PerformanceMax' are merged into one category) to avoid duplicate bars."
 )
 
 # ==================================================
