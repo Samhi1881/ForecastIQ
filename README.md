@@ -173,6 +173,43 @@ Convert forecast outputs into actionable business insights.
 | MAE      | 1.70              |
 
 ---
+## Project Structure
+
+```text
+ForecastIQ/
+│
+├── app/
+│   └── dashboard.py
+│
+├── src/
+│   ├── generate_features.py
+│   ├── feature_engineering.py
+│   ├── predict.py
+│   ├── train.py
+│   ├── train_roas.py
+│   ├── monte_carlo.py
+│   ├── optimizer.py
+│   ├── shap_analysis.py
+│   └── preprocess.py
+│
+├── pickle/
+│   ├── model.pkl
+│   ├── revenue_model.pkl
+│   ├── roas_model.pkl
+│   ├── channel_encoder.pkl
+│   └── campaign_encoder.pkl
+│
+├── data/                 # Input datasets
+│
+├── output/
+│   └── predictions.csv
+│
+├── requirements.txt
+├── run.sh
+└── README.md
+```
+
+---
 
 ## How to Run ForecastIQ
 
@@ -205,49 +242,24 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Train Revenue Forecast Model
+### 4. Run the Forecasting Pipeline
 
 ```bash
-python src/train.py
+./run.sh ./data ./pickle/model.pkl ./output/predictions.csv
 ```
 
-Output:
+This command:
 
-```text
-pickle/revenue_model.pkl
-```
-
-### 5. Train ROAS Forecast Model
-
-```bash
-python src/train_roas.py
-```
-
-Output:
-
-```text
-pickle/roas_model.pkl
-```
-
-### 6. Generate Forecast Predictions
-
-```bash
-python src/predict.py
-```
-
-Output:
+* Generates features from the input data
+* Loads the trained forecasting model
+* Generates revenue predictions
+* Saves results to:
 
 ```text
 output/predictions.csv
 ```
 
-### 7. Run Probabilistic Forecasting
-
-```bash
-python src/monte_carlo.py
-```
-
-### 8. Launch Dashboard
+### 5. Launch Dashboard
 
 ```bash
 streamlit run app/dashboard.py
@@ -259,41 +271,32 @@ Open:
 http://localhost:8501
 ```
 
-### Alternative: Run Complete Pipeline
+---
+
+## Hackathon Evaluation Command
+
+The command expected for automated evaluation is:
 
 ```bash
-bash run.sh
+./run.sh ./data ./pickle/model.pkl ./output/predictions.csv
 ```
+
+Expected output:
+
+```text
+output/predictions.csv
+```
+
+This command is the primary entry point used for automated evaluation.
 
 ---
 
-## Project Structure
+## Environment
 
-```text
-ForecastIQ/
-│
-├── app/
-│   └── dashboard.py
-│
-├── src/
-│   ├── train.py
-│   ├── train_roas.py
-│   ├── predict.py
-│   ├── monte_carlo.py
-│   ├── optimizer.py
-│   └── shap_analysis.py
-│
-├── pickle/
-│   ├── revenue_model.pkl
-│   └── roas_model.pkl
-│
-├── output/
-│   └── predictions.csv
-│
-├── requirements.txt
-├── run.sh
-└── README.md
-```
+* Python 3.11
+* No internet access required during inference
+* Trained models are included in the repository under `pickle/`
+* Predictions are generated automatically from a single command
 
 ---
 
