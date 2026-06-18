@@ -2,8 +2,7 @@ venv/
 __pycache__/
 *.pyc
 
-pickle/
-output/
+
 
 .env
 
